@@ -1,0 +1,28 @@
+{
+  "name": "top-skill",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "description": "oss!idle add-on: counts, per skill, how many finished maps gave that skill the most XP.",
+  "scripts": {
+    "build": "node ./scripts/build-addon.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/tally-test.mjs",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@lingui/core": "^5.9.5",
+    "@lingui/message-utils": "^5.9.5",
+    "@oss-idle/addon-sdk": "^0.9.0",
+    "oss-idle": "https://codeload.github.com/oss-idle/oss-idle/tar.gz/85b5200ebe9831650864a09a423483b627380f58"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "esbuild": "^0.24.2",
+    "sql.js": "^1.15.1",
+    "typescript": "^5.6.3",
+    "zod": "^4.6.7"
+  }
+}
