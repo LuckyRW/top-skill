@@ -1,14 +1,22 @@
-.panel { position: fixed; top: 64px; right: 16px; z-index: 2147483000; width: 220px;
+/* The SDK's overlay host sets pointer-events: none so it never blocks the game;
+   the panel has to turn it back on or none of its buttons get clicks. */
+.panel { pointer-events: auto; position: fixed; top: 64px; right: 16px; width: 250px;
   background: rgba(20, 20, 28, .94); color: #eee; font: 13px/1.4 system-ui, sans-serif;
   border: 1px solid #444; border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
 header { display: flex; justify-content: space-between; align-items: center; }
 .sub { color: #999; font-size: 11px; margin: 2px 0 6px; }
 ol { list-style: none; margin: 0; padding: 0; }
 li { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid #2c2c36; }
-li span:last-child { font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; }
+.num em { font-style: normal; color: #8ab4f8; display: inline-block; min-width: 64px; text-align: right; }
 li.lead { color: #ffd166; font-weight: 600; }
 li.zero { color: #777; }
-button { background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; cursor: pointer; font: inherit; }
+button { background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; cursor: pointer; font: inherit; padding: 4px 8px; }
 button:hover { background: #444; }
+button:disabled { opacity: .5; cursor: default; }
 .x { border: none; background: none; font-size: 16px; padding: 0 4px; }
-.clear { margin-top: 8px; width: 100%; padding: 4px; }
+.wide { margin-top: 8px; width: 100%; }
+.export { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.export label { display: flex; gap: 4px; align-items: center; color: #bbb; }
+.export input { width: 48px; background: #111; color: #eee; border: 1px solid #555; border-radius: 4px; padding: 3px 5px; font: inherit; }
+.export button { flex: 1; }
