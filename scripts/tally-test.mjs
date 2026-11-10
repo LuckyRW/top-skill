@@ -91,3 +91,36 @@ try {
 rmSync(dir, { recursive: true, force: true });
 console.log(`export: ${p2} passed, ${f2} failed`);
 if (f2) process.exitCode = 1;
+
+// --- base XP: the multiplier the Character screen shows, and the division ---
+const out3 = join(root, '.test3.mjs');
+await build({
+	entryPoints: [join(root, 'src/multiplier.ts')], outfile: out3, bundle: true, format: 'esm', platform: 'node',
+	target: 'es2022', logLevel: 'error',
+	alias: { '@oss-idle/shared': join(root, 'node_modules/oss-idle/packages/shared/src') },
+});
+const mu = await import(pathToFileURL(out3).href);
+rmSync(out3);
+let p3 = 0, f3 = 0;
+const check3 = (name, ok, extra = '') => { ok ? p3++ : (f3++, console.log('  FAIL:', name, extra)); };
+const near = (a, b, tol) => Math.abs(a - b) <= tol;
+// from the Character screen: Accuracy 10 upgrades, overdrive 86.1, 2 prestige, no genetics, x2.73 medals = x34.92;
+// Coordination 10 upgrades, overdrive 69.1, 1 prestige = x29.90
+const mx = mu.skillMultipliers({
+	accuracyUpgrades: 10, accuracyOverdrive: 86.1, accuracyPrestige: 2,
+	coordinationUpgrades: 10, coordinationOverdrive: 69.1, coordinationPrestige: 1,
+	geneticsJson: '',
+}, 2.73);
+check3('Accuracy matches the Character screen (x34.92)', near(mx.accuracy, 34.92, 0.1), mx.accuracy);
+check3('Coordination matches the Character screen (x29.90)', near(mx.coordination, 29.9, 0.1), mx.coordination);
+check3('a skill with nothing is x1 times medals', near(mx.memory, 2.73, 1e-9), mx.memory);
+check3('bad genetics JSON is no genetics', near(mu.skillMultipliers({ geneticsJson: '{oops' }, 1).speed, 1, 1e-9));
+check3('no medals is x1', mu.medalMultiplier([]) === 1);
+const based = x.averageRows([{ scoreId: 1, beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":100,"speed":30}' }], {
+	nameOf: () => 'map', lengthOf: () => 57_000, strainOf: () => undefined, multOf: () => ({ accuracy: 10, speed: 3 }),
+});
+const bh = based[0];
+check3('base XP divides each skill by its own multiplier', based[1][bh.indexOf('Avg Accuracy base XP')] === 10
+	&& based[1][bh.indexOf('Avg Speed base XP')] === 10 && based[1][bh.indexOf('Avg total base XP')] === 20, JSON.stringify(bh));
+console.log(`base XP: ${p3} passed, ${f3} failed`);
+if (f3) process.exitCode = 1;

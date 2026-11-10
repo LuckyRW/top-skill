@@ -1,6 +1,6 @@
 {
   "name": "top-skill",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -15,7 +15,7 @@
     "@lingui/core": "^5.9.5",
     "@lingui/message-utils": "^5.9.5",
     "@oss-idle/addon-sdk": "^0.9.0",
-    "oss-idle": "https://codeload.github.com/oss-idle/oss-idle/tar.gz/85b5200ebe9831650864a09a423483b627380f58"
+    "oss-idle": "https://codeload.github.com/oss-idle/oss-idle/tar.gz/5d3882bf338de492347d156a5e6a68610698d201"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

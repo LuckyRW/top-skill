@@ -23,6 +23,12 @@ export type MapInfo = {
 	/** The map's length at 1x, in milliseconds; undefined when the map is not stored locally. */
 	lengthOf: (beatmapId: number) => number | undefined;
 	strainOf: (scoreId: number) => Strain | undefined;
+	/**
+	 * For base XP: the play's XP multiplier per skill, which each skill's XP is
+	 * divided by. Left out for the XP as gained. Plays it has nothing for should
+	 * be left out by the caller: they cannot be turned into base XP.
+	 */
+	multOf?: (scoreId: number) => Record<string, number> | undefined;
 };
 
 /** An empty rate field, or "all", exports every rate. */
@@ -65,8 +71,10 @@ export const averageRows = (plays: Play[], info: MapInfo): Cell[][] => {
 			beatmapId: play.beatmapId, rate, mods: play.mods, plays: 0, xp: {}, strained: 0, before: 0, after: 0,
 		});
 		group.plays++;
+		const mult = info.multOf?.(play.scoreId);
 		for (const [skill, raw] of Object.entries(parseGains(play.gains))) {
-			const xp = Number(raw);
+			const by = mult?.[skill];
+			const xp = Number(raw) / (by && by > 0 ? by : 1);
 			if (!Number.isFinite(xp)) continue;
 			seen.add(skill);
 			group.xp[skill] = (group.xp[skill] ?? 0) + xp;
@@ -102,12 +110,13 @@ export const averageRows = (plays: Play[], info: MapInfo): Cell[][] => {
 		};
 	});
 	rows.sort((a, b) => b.sort - a.sort);
+	const kind = info.multOf ? 'base ' : '';
 	return [
 		[
 			'Map', 'Rate', 'Mods', 'Plays', 'Map time (s)', `Time per play incl. ${AUTOPILOT_S}s autopilot (s)`,
-			'Avg total XP', 'Total XP/s',
-			...skills.map(s => `Avg ${labelOf(s)} XP`),
-			...skills.map(s => `${labelOf(s)} XP/s`),
+			`Avg total ${kind}XP`, `Total ${kind}XP/s`,
+			...skills.map(s => `Avg ${labelOf(s)} ${kind}XP`),
+			...skills.map(s => `${labelOf(s)} ${kind}XP/s`),
 			'Avg strain before (min)', 'Avg strain after (min)', 'Avg strain drift (min)', 'Plays with strain read',
 		],
 		...rows.map(r => r.cells),

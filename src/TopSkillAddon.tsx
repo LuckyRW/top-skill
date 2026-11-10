@@ -16,7 +16,8 @@ import { beatmapStore, createSettings, gameDb } from '@oss-idle/addon-sdk';
 import { ReactAddon } from '@oss-idle/addon-sdk/react';
 import type { ReactNode } from 'react';
 import { averageRows, isAllRates, parseRate, type Play, type Strain } from './average.js';
-import { count, labelOf, parseGains, ranked, type Tally } from './tally.js';
+import { medalMultiplier, skillMultipliers } from './multiplier.js';
+import { count, labelOf, parseGains, ranked, SKILLS, type Tally } from './tally.js';
 import { workbook } from './xlsx.js';
 import styles from './styles.css';
 
@@ -36,12 +37,27 @@ type State = {
 	/** The newest play when Clear was last pressed: the export skips it and older ones. -1 = never cleared. */
 	clearedPlayedAt: number;
 	clearedScoreId: number;
+	/** Export base XP (divided by each play's multipliers) rather than XP as gained. */
+	base: boolean;
+	/** The medal multiplier last read, for when the server cannot be asked. 0 = never read. */
+	medals: number;
 };
 
 const store = createSettings<State>('top-skill', {
 	tally: {}, xp: {}, plays: 0, lastPlayedAt: -1, lastScoreId: -1, rate: '1',
-	clearedPlayedAt: -1, clearedScoreId: -1,
+	clearedPlayedAt: -1, clearedScoreId: -1, base: true, medals: 0,
 });
+
+/** Each skill's XP multiplier as a play landed, in SKILLS order, by its local score id. */
+type MultRecord = { scoreId: number; m: number[] };
+/** About 100 bytes each: kept well inside the browser storage the game shares. */
+const MAX_MULT_RECORDS = 5_000;
+const multStore = createSettings<{ records: MultRecord[] }>('top-skill-mult', { records: [] });
+
+/** The server the medals are read from: the API's own host. */
+const API_HOST = 'https://api.oss.idle.rhythmgamers.net';
+/** Medals change rarely: asked again at most this often. */
+const MEDALS_TTL_MS = 10 * 60_000;
 
 /** Strain minutes read around one play, by its local score id. */
 type StrainRecord = Strain & { scoreId: number };
@@ -52,7 +68,7 @@ const strainStore = createSettings<{ records: StrainRecord[] }>('top-skill-strai
 /** How often the add-on looks for the play screen opening, to read strain before a play. */
 const PLAY_CHECK_MS = 500;
 
-type Row = { scoreId: number; playedAt: number; gains: string };
+type Row = { scoreId: number; characterId: number; playedAt: number; gains: string };
 
 const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: n < 100 ? 1 : 0 });
 
@@ -68,6 +84,8 @@ export class TopSkillAddon extends ReactAddon {
 	private playing = false;
 	/** Strain read as the current play started, settled once `/me` answers. */
 	private strainBefore?: Promise<number | undefined>;
+	/** When the medals were last read from the server. */
+	private medalsReadAt = 0;
 
 	constructor() {
 		super({ name: 'Top Skill', overlayId: 'top-skill', styles });
@@ -102,6 +120,41 @@ export class TopSkillAddon extends ReactAddon {
 		this.playing = playing;
 	}
 
+	/** The medal multiplier: from the server every {@link MEDALS_TTL_MS}, else the last one read. */
+	private async medalBoost(characterId: number): Promise<number | undefined> {
+		if (characterId > 0 && Date.now() - this.medalsReadAt > MEDALS_TTL_MS) {
+			try {
+				const res = await fetch(`${API_HOST}/v1/characters/${characterId}/medals?ruleset=mania4k`);
+				if (res.ok) {
+					const { held } = await res.json() as { held?: { id: string }[] };
+					if (Array.isArray(held)) {
+						this.medalsReadAt = Date.now();
+						this.save({ ...this.state, medals: medalMultiplier(held.map(m => m.id)) });
+					}
+				}
+			} catch { /* offline: keep the last one */ }
+		}
+		return this.state.medals > 0 ? this.state.medals : undefined;
+	}
+
+	/**
+	 * Each skill's multiplier for the play that just landed, from the character's
+	 * row in the game's database, as the Character screen works it out.
+	 */
+	private async recordMultipliers(scoreId: number, characterId: number): Promise<void> {
+		try {
+			const [row, medals] = await Promise.all([
+				gameDb.first<Record<string, unknown>>('SELECT * FROM character WHERE id = ?', [characterId]),
+				this.medalBoost(characterId),
+			]);
+			if (!row || medals === undefined) return;
+			const mult = skillMultipliers(row, medals);
+			const m = SKILLS.map(s => Math.round(mult[s] * 10_000) / 10_000);
+			const records = [...multStore.load().records, { scoreId, m }].slice(-MAX_MULT_RECORDS);
+			multStore.save({ records });
+		} catch { /* this play just has no base XP */ }
+	}
+
 	/** Strain after the play that just landed, stored with the reading from its start. */
 	private async recordStrain(scoreId: number): Promise<void> {
 		const pending = this.strainBefore;
@@ -124,7 +177,7 @@ export class TopSkillAddon extends ReactAddon {
 				return;
 			}
 			const rows = await gameDb.select<Row>(
-				`SELECT scoreId, playedAt, gains FROM score_xp
+				`SELECT scoreId, characterId, playedAt, gains FROM score_xp
 				 WHERE playedAt > ? OR (playedAt = ? AND scoreId > ?)
 				 ORDER BY playedAt, scoreId`,
 				[this.state.lastPlayedAt, this.state.lastPlayedAt, this.state.lastScoreId]);
@@ -144,6 +197,8 @@ export class TopSkillAddon extends ReactAddon {
 			this.save({ ...this.state, tally, xp, plays, lastPlayedAt: last.playedAt, lastScoreId: last.scoreId });
 			// the strain read at the play's start belongs to the newest play only
 			void this.recordStrain(last.scoreId);
+			// read right after the plays land: what the character has now is what they were multiplied by
+			for (const row of rows) void this.recordMultipliers(row.scoreId, row.characterId);
 		} catch {
 			// score_xp only exists once the game has saved its first gain; try again next tick
 		} finally {
@@ -211,22 +266,35 @@ export class TopSkillAddon extends ReactAddon {
 				}
 			} catch { /* a map not stored locally keeps its id and has no time */ }
 			const strain = new Map(strainStore.load().records.map(r => [r.scoreId, r]));
-			const rows = averageRows(plays, {
+			const { base } = this.state;
+			// base XP needs the multipliers a play had: plays from before they were recorded are left out
+			const mult = new Map(multStore.load().records.map(r =>
+				[r.scoreId, Object.fromEntries(SKILLS.map((s, i) => [s, r.m[i]]))]));
+			const used = base ? plays.filter(p => mult.has(p.scoreId)) : plays;
+			if (!used.length) {
+				this.setStatus(`None of the ${plays.length} plays at ${label} has its multipliers recorded yet:`
+					+ ' untick Base XP, or play a few maps first');
+				return;
+			}
+			const rows = averageRows(used, {
 				nameOf: id => names.get(id) ?? `beatmap ${id}`,
 				lengthOf: id => lengths.get(id),
 				strainOf: scoreId => strain.get(scoreId),
+				multOf: base ? scoreId => mult.get(scoreId) : undefined,
 			});
-			const file = workbook(label, rows);
+			const file = workbook(`${label}${base ? ' base' : ''}`, rows);
 			const url = URL.createObjectURL(new Blob([file],
 				{ type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = `top-skill-xp-${all ? 'all-rates' : `${rate}x`}.xlsx`;
+			a.download = `top-skill-${base ? 'base-' : ''}xp-${all ? 'all-rates' : `${rate}x`}.xlsx`;
 			document.body.append(a);
 			a.click();
 			a.remove();
 			setTimeout(() => URL.revokeObjectURL(url), 10_000);
-			this.setStatus(`Saved ${rows.length - 1} map${rows.length === 2 ? '' : 's'} (${plays.length} plays)`);
+			const skipped = plays.length - used.length;
+			this.setStatus(`Saved ${rows.length - 1} map${rows.length === 2 ? '' : 's'} (${used.length} plays`
+				+ `${skipped ? `; ${skipped} older plays have no multipliers recorded` : ''})`);
 		} catch (e) {
 			this.setStatus(`Export failed: ${(e as Error).message}`);
 		} finally {
@@ -280,6 +348,15 @@ export class TopSkillAddon extends ReactAddon {
 						/>
 					</label>
 					<button onClick={() => void this.exportXlsx()} disabled={this.exporting}>Export .xlsx</button>
+				</div>
+				<div className="export">
+					<label title="Each play's XP divided by the multipliers it had (upgrades, overdrive, prestige, genetics, medals). Untick for the XP as gained.">
+						<input
+							type="checkbox" checked={this.state.base}
+							onChange={e => this.save({ ...this.state, base: e.target.checked })}
+						/>
+						Base XP (÷ multipliers)
+					</label>
 				</div>
 				{this.status && <div className="sub">{this.status}</div>}
 			</div>
