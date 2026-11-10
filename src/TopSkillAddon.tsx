@@ -33,10 +33,14 @@ type State = {
 	lastScoreId: number;
 	/** What the rate field last held. */
 	rate: string;
+	/** The newest play when Clear was last pressed: the export skips it and older ones. -1 = never cleared. */
+	clearedPlayedAt: number;
+	clearedScoreId: number;
 };
 
 const store = createSettings<State>('top-skill', {
 	tally: {}, xp: {}, plays: 0, lastPlayedAt: -1, lastScoreId: -1, rate: '1',
+	clearedPlayedAt: -1, clearedScoreId: -1,
 });
 
 type Row = { scoreId: number; playedAt: number; gains: string };
@@ -106,9 +110,16 @@ export class TopSkillAddon extends ReactAddon {
 		this.refresh();
 	}
 
-	/** Zero the counters and XP totals; plays already finished stay uncounted. */
+	/**
+	 * Zero the counters and XP totals, and start the export over: plays already
+	 * finished stay out of both. The game's own play history is left untouched.
+	 */
 	private clear(): void {
-		this.save({ ...this.state, tally: {}, xp: {}, plays: 0 });
+		this.save({
+			...this.state, tally: {}, xp: {}, plays: 0,
+			clearedPlayedAt: Math.max(this.state.lastPlayedAt, 0), clearedScoreId: Math.max(this.state.lastScoreId, 0),
+		});
+		this.setStatus('Cleared: the export starts from here too');
 	}
 
 	/** Average XP per skill per map at the typed rate, as an .xlsx download. */
@@ -136,9 +147,13 @@ export class TopSkillAddon extends ReactAddon {
 					LEFT JOIN score s2 ON s.id IS NULL AND s2.characterId = x.characterId
 						AND s2.beatmapId = x.beatmapId AND s2.playedAt = x.playedAt
 					WHERE x.characterId = ?
+						AND (x.playedAt > ? OR (x.playedAt = ? AND x.scoreId > ?))
 				 ) WHERE rate IS NOT NULL AND (? < 0 OR ABS(rate - ?) < 0.0001)`,
-				[characterId, rate, rate]);
-			if (!plays.length) { this.setStatus(`No plays at ${label}`); return; }
+				[characterId, this.state.clearedPlayedAt, this.state.clearedPlayedAt, this.state.clearedScoreId, rate, rate]);
+			if (!plays.length) {
+				this.setStatus(`No plays at ${label}${this.state.clearedPlayedAt >= 0 ? ' since the last clear' : ''}`);
+				return;
+			}
 			const names = new Map<number, string>();
 			try {
 				for (const { set, version } of await beatmapStore.difficulties())
