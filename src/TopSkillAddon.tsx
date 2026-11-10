@@ -15,7 +15,7 @@
 import { beatmapStore, createSettings, gameDb } from '@oss-idle/addon-sdk';
 import { ReactAddon } from '@oss-idle/addon-sdk/react';
 import type { ReactNode } from 'react';
-import { averageRows, parseRate, type Play } from './average.js';
+import { averageRows, isAllRates, parseRate, type Play } from './average.js';
 import { count, labelOf, parseGains, ranked, type Tally } from './tally.js';
 import { workbook } from './xlsx.js';
 import styles from './styles.css';
@@ -113,8 +113,10 @@ export class TopSkillAddon extends ReactAddon {
 
 	/** Average XP per skill per map at the typed rate, as an .xlsx download. */
 	private async exportXlsx(): Promise<void> {
-		const rate = parseRate(this.state.rate);
-		if (rate === undefined) { this.setStatus('Type a rate, like 1.2'); return; }
+		const all = isAllRates(this.state.rate);
+		const rate = all ? -1 : parseRate(this.state.rate);
+		if (rate === undefined) { this.setStatus('Type a rate like 1.2, or all'); return; }
+		const label = all ? 'all rates' : `${rate}x`;
 		if (this.exporting) return;
 		this.exporting = true;
 		this.setStatus('Exporting...');
@@ -126,26 +128,29 @@ export class TopSkillAddon extends ReactAddon {
 			// A score synced from the server can be stored again under a new id, so
 			// a play whose id no longer matches is found by map and time instead.
 			const plays = await gameDb.select<Play>(
-				`SELECT x.beatmapId AS beatmapId, COALESCE(s.mods, s2.mods, '') AS mods, x.gains AS gains
-				 FROM score_xp x
-				 LEFT JOIN score s ON s.id = x.scoreId
-				 LEFT JOIN score s2 ON s.id IS NULL AND s2.characterId = x.characterId
-					AND s2.beatmapId = x.beatmapId AND s2.playedAt = x.playedAt
-				 WHERE x.characterId = ? AND ABS(COALESCE(s.rate, s2.rate, -1) - ?) < 0.0001`,
-				[characterId, rate]);
-			if (!plays.length) { this.setStatus(`No plays at ${rate}x`); return; }
+				`SELECT * FROM (
+					SELECT x.beatmapId AS beatmapId, COALESCE(s.rate, s2.rate) AS rate,
+						COALESCE(s.mods, s2.mods, '') AS mods, x.gains AS gains
+					FROM score_xp x
+					LEFT JOIN score s ON s.id = x.scoreId
+					LEFT JOIN score s2 ON s.id IS NULL AND s2.characterId = x.characterId
+						AND s2.beatmapId = x.beatmapId AND s2.playedAt = x.playedAt
+					WHERE x.characterId = ?
+				 ) WHERE rate IS NOT NULL AND (? < 0 OR ABS(rate - ?) < 0.0001)`,
+				[characterId, rate, rate]);
+			if (!plays.length) { this.setStatus(`No plays at ${label}`); return; }
 			const names = new Map<number, string>();
 			try {
 				for (const { set, version } of await beatmapStore.difficulties())
 					names.set(version.id, `${set.artist} - ${set.title} [${version.version}]`);
 			} catch { /* names are a nicety: ids still identify the maps */ }
 			const rows = averageRows(plays, id => names.get(id) ?? `beatmap ${id}`);
-			const file = workbook(`${rate}x`, rows);
+			const file = workbook(label, rows);
 			const url = URL.createObjectURL(new Blob([file],
 				{ type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = `top-skill-xp-${rate}x.xlsx`;
+			a.download = `top-skill-xp-${all ? 'all-rates' : `${rate}x`}.xlsx`;
 			document.body.append(a);
 			a.click();
 			a.remove();
@@ -197,7 +202,8 @@ export class TopSkillAddon extends ReactAddon {
 					<label>
 						Rate
 						<input
-							type="text" inputMode="decimal" value={this.state.rate}
+							type="text" value={this.state.rate} placeholder="all"
+							title="A rate like 1.2, or empty / all for every rate"
 							onChange={e => this.save({ ...this.state, rate: e.target.value })}
 							onKeyDown={e => { if (e.key === 'Enter') void this.exportXlsx(); }}
 						/>

@@ -46,18 +46,21 @@ check2('rate with a comma', x.parseRate('1,2') === 1.2);
 check2('rate with an x', x.parseRate('1.5x') === 1.5 && x.parseRate('x0.8') === 0.8);
 check2('junk is no rate', x.parseRate('fast') === undefined && x.parseRate('') === undefined);
 const rows = x.averageRows([
-	{ beatmapId: 1, mods: '', gains: '{"accuracy":10,"speed":4}' },
-	{ beatmapId: 1, mods: '', gains: '{"accuracy":20}' },
-	{ beatmapId: 1, mods: 'EZ', gains: '{"accuracy":5}' },
-	{ beatmapId: 2, mods: '', gains: '{"speed":100}' },
+	{ beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":10,"speed":4}' },
+	{ beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":20}' },
+	{ beatmapId: 1, rate: 1, mods: 'EZ', gains: '{"accuracy":5}' },
+	{ beatmapId: 2, rate: 1, mods: '', gains: '{"speed":100}' },
+	{ beatmapId: 1, rate: 1.2000000000000002, mods: '', gains: '{"accuracy":40}' },
 ], id => `map ${id}`);
 const head = rows[0];
 const acc = head.indexOf('Avg Accuracy XP'), spd = head.indexOf('Avg Speed XP');
-check2('header', head[0] === 'Map' && head[3] === 'Avg total XP' && acc > 3, JSON.stringify(head));
-check2('most total XP first', rows[1][0] === 'map 2' && rows[1][3] === 100);
-const nm = rows.find(r => r[0] === 'map 1' && r[1] === 'NM');
-check2('averages over every play, 0 where a skill got nothing', nm[2] === 2 && nm[acc] === 15 && nm[spd] === 2, JSON.stringify(nm));
-check2('mods kept apart', rows.some(r => r[0] === 'map 1' && r[1] === 'EZ' && r[2] === 1));
+check2('header', head[0] === 'Map' && head[1] === 'Rate' && head[4] === 'Avg total XP' && acc > 3, JSON.stringify(head));
+check2('most total XP first', rows[1][0] === 'map 2' && rows[1][4] === 100);
+const nm = rows.find(r => r[0] === 'map 1' && r[1] === 1 && r[2] === 'NM');
+check2('averages over every play, 0 where a skill got nothing', nm[3] === 2 && nm[acc] === 15 && nm[spd] === 2, JSON.stringify(nm));
+check2('mods kept apart', rows.some(r => r[0] === 'map 1' && r[2] === 'EZ' && r[3] === 1));
+check2('rates kept apart, float noise rounded', rows.some(r => r[0] === 'map 1' && r[1] === 1.2 && r[3] === 1));
+check2('empty or all means every rate', x.isAllRates('') && x.isAllRates(' All ') && !x.isAllRates('1.2'));
 check2('column letters', x.column(0) === 'A' && x.column(25) === 'Z' && x.column(26) === 'AA');
 
 const { writeFileSync, mkdtempSync, readFileSync } = await import('node:fs');
