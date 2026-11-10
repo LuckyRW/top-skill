@@ -15,7 +15,7 @@
 import { beatmapStore, createSettings, gameDb } from '@oss-idle/addon-sdk';
 import { ReactAddon } from '@oss-idle/addon-sdk/react';
 import type { ReactNode } from 'react';
-import { averageRows, isAllRates, parseRate, type Play } from './average.js';
+import { averageRows, isAllRates, parseRate, type Play, type Strain } from './average.js';
 import { count, labelOf, parseGains, ranked, type Tally } from './tally.js';
 import { workbook } from './xlsx.js';
 import styles from './styles.css';
@@ -43,6 +43,15 @@ const store = createSettings<State>('top-skill', {
 	clearedPlayedAt: -1, clearedScoreId: -1,
 });
 
+/** Strain minutes read around one play, by its local score id. */
+type StrainRecord = Strain & { scoreId: number };
+/** Enough for weeks of autopilot; the oldest are dropped past it. */
+const MAX_STRAIN_RECORDS = 20_000;
+const strainStore = createSettings<{ records: StrainRecord[] }>('top-skill-strain', { records: [] });
+
+/** How often the add-on looks for the play screen opening, to read strain before a play. */
+const PLAY_CHECK_MS = 500;
+
 type Row = { scoreId: number; playedAt: number; gains: string };
 
 const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: n < 100 ? 1 : 0 });
@@ -55,6 +64,10 @@ export class TopSkillAddon extends ReactAddon {
 	private exporting = false;
 	private status = '';
 	private escape?: () => void;
+	/** Whether the play screen was open at the last check. */
+	private playing = false;
+	/** Strain read as the current play started, settled once `/me` answers. */
+	private strainBefore?: Promise<number | undefined>;
 
 	constructor() {
 		super({ name: 'Top Skill', overlayId: 'top-skill', styles });
@@ -64,8 +77,40 @@ export class TopSkillAddon extends ReactAddon {
 		this.own(this.hotkeys.register(TOGGLE, () => this.toggle(), { allowInText: true }));
 		this.log.info(`ready - press ${TOGGLE} to open`);
 		try { await gameDb.ready(); } catch { this.log.warn('game database never opened'); return; }
+		this.interval(() => this.watchPlay(), PLAY_CHECK_MS);
 		await this.poll();
 		this.interval(() => void this.poll(), POLL_MS);
+	}
+
+	/** The strain the server has for the signed-in character (`/me` fatigue.minutes). */
+	private async readStrain(): Promise<number | undefined> {
+		const api = (this.host as { api?: { me(): Promise<unknown> } } | undefined)?.api;
+		if (!api) return undefined;
+		try {
+			const me = await api.me() as { fatigue?: { minutes?: unknown } };
+			const minutes = Number(me?.fatigue?.minutes);
+			return Number.isFinite(minutes) ? minutes : undefined;
+		} catch {
+			return undefined; // a guest, or offline: no strain for this play
+		}
+	}
+
+	/** Read strain when the play screen opens: that is the "before" of the next play. */
+	private watchPlay(): void {
+		const playing = document.querySelector('.play__canvas') !== null;
+		if (playing && !this.playing) this.strainBefore = this.readStrain();
+		this.playing = playing;
+	}
+
+	/** Strain after the play that just landed, stored with the reading from its start. */
+	private async recordStrain(scoreId: number): Promise<void> {
+		const pending = this.strainBefore;
+		this.strainBefore = undefined;
+		if (!pending) return;
+		const [before, after] = await Promise.all([pending, this.readStrain()]);
+		if (before === undefined || after === undefined) return;
+		const records = [...strainStore.load().records, { scoreId, before, after }].slice(-MAX_STRAIN_RECORDS);
+		strainStore.save({ records });
 	}
 
 	private async poll(): Promise<void> {
@@ -97,6 +142,8 @@ export class TopSkillAddon extends ReactAddon {
 			}
 			const last = rows[rows.length - 1];
 			this.save({ ...this.state, tally, xp, plays, lastPlayedAt: last.playedAt, lastScoreId: last.scoreId });
+			// the strain read at the play's start belongs to the newest play only
+			void this.recordStrain(last.scoreId);
 		} catch {
 			// score_xp only exists once the game has saved its first gain; try again next tick
 		} finally {
@@ -140,7 +187,7 @@ export class TopSkillAddon extends ReactAddon {
 			// a play whose id no longer matches is found by map and time instead.
 			const plays = await gameDb.select<Play>(
 				`SELECT * FROM (
-					SELECT x.beatmapId AS beatmapId, COALESCE(s.rate, s2.rate) AS rate,
+					SELECT x.scoreId AS scoreId, x.beatmapId AS beatmapId, COALESCE(s.rate, s2.rate) AS rate,
 						COALESCE(s.mods, s2.mods, '') AS mods, x.gains AS gains
 					FROM score_xp x
 					LEFT JOIN score s ON s.id = x.scoreId
@@ -155,11 +202,20 @@ export class TopSkillAddon extends ReactAddon {
 				return;
 			}
 			const names = new Map<number, string>();
+			const lengths = new Map<number, number>();
 			try {
-				for (const { set, version } of await beatmapStore.difficulties())
+				for (const { set, version } of await beatmapStore.difficulties()) {
 					names.set(version.id, `${set.artist} - ${set.title} [${version.version}]`);
-			} catch { /* names are a nicety: ids still identify the maps */ }
-			const rows = averageRows(plays, id => names.get(id) ?? `beatmap ${id}`);
+					// the local store keeps lengths in milliseconds (song select divides by 1000)
+					if (Number.isFinite(version.total_length)) lengths.set(version.id, version.total_length);
+				}
+			} catch { /* a map not stored locally keeps its id and has no time */ }
+			const strain = new Map(strainStore.load().records.map(r => [r.scoreId, r]));
+			const rows = averageRows(plays, {
+				nameOf: id => names.get(id) ?? `beatmap ${id}`,
+				lengthOf: id => lengths.get(id),
+				strainOf: scoreId => strain.get(scoreId),
+			});
 			const file = workbook(label, rows);
 			const url = URL.createObjectURL(new Blob([file],
 				{ type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));

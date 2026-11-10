@@ -45,21 +45,34 @@ const check2 = (name, ok, extra = '') => { ok ? p2++ : (f2++, console.log('  FAI
 check2('rate with a comma', x.parseRate('1,2') === 1.2);
 check2('rate with an x', x.parseRate('1.5x') === 1.5 && x.parseRate('x0.8') === 0.8);
 check2('junk is no rate', x.parseRate('fast') === undefined && x.parseRate('') === undefined);
+// map 1 is 57 s at 1x and map 2 117 s, so with 3 s of autopilot a play takes 60 s and 120 s
+const lengths = { 1: 57_000, 2: 117_000 };
+const strains = { 1: { before: 10, after: 11 }, 2: { before: 20, after: 22 } };
 const rows = x.averageRows([
-	{ beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":10,"speed":4}' },
-	{ beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":20}' },
-	{ beatmapId: 1, rate: 1, mods: 'EZ', gains: '{"accuracy":5}' },
-	{ beatmapId: 2, rate: 1, mods: '', gains: '{"speed":100}' },
-	{ beatmapId: 1, rate: 1.2000000000000002, mods: '', gains: '{"accuracy":40}' },
-], id => `map ${id}`);
+	{ scoreId: 1, beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":10,"speed":4}' },
+	{ scoreId: 2, beatmapId: 1, rate: 1, mods: '', gains: '{"accuracy":20}' },
+	{ scoreId: 3, beatmapId: 1, rate: 1, mods: 'EZ', gains: '{"accuracy":5}' },
+	{ scoreId: 4, beatmapId: 2, rate: 1, mods: '', gains: '{"speed":100}' },
+	{ scoreId: 5, beatmapId: 1, rate: 1.2000000000000002, mods: '', gains: '{"accuracy":40}' },
+	{ scoreId: 6, beatmapId: 3, rate: 1, mods: '', gains: '{"accuracy":999}' },
+], { nameOf: id => `map ${id}`, lengthOf: id => lengths[id], strainOf: id => strains[id] });
 const head = rows[0];
-const acc = head.indexOf('Avg Accuracy XP'), spd = head.indexOf('Avg Speed XP');
-check2('header', head[0] === 'Map' && head[1] === 'Rate' && head[4] === 'Avg total XP' && acc > 3, JSON.stringify(head));
-check2('most total XP first', rows[1][0] === 'map 2' && rows[1][4] === 100);
+const col = name => head.indexOf(name);
+const acc = col('Avg Accuracy XP'), spd = col('Avg Speed XP'), accS = col('Accuracy XP/s'), total = col('Avg total XP');
+check2('header', head[0] === 'Map' && head[1] === 'Rate' && acc > total && accS > acc && col('Avg strain drift (min)') > accS, JSON.stringify(head));
+check2('most total XP per second first', rows[1][0] === 'map 2' && rows[1][col('Total XP/s')] === 0.833, JSON.stringify(rows[1]));
 const nm = rows.find(r => r[0] === 'map 1' && r[1] === 1 && r[2] === 'NM');
 check2('averages over every play, 0 where a skill got nothing', nm[3] === 2 && nm[acc] === 15 && nm[spd] === 2, JSON.stringify(nm));
+check2('map time and time per play with autopilot', nm[col('Map time (s)')] === 57 && nm[5] === 60);
+check2('XP per second per skill', nm[accS] === 0.25 && nm[col('Speed XP/s')] === 0.033 && nm[col('Total XP/s')] === 0.283, JSON.stringify(nm));
+check2('strain before, after and drift averaged', nm[col('Avg strain before (min)')] === 15
+	&& nm[col('Avg strain after (min)')] === 16.5 && nm[col('Avg strain drift (min)')] === 1.5 && nm[col('Plays with strain read')] === 2);
 check2('mods kept apart', rows.some(r => r[0] === 'map 1' && r[2] === 'EZ' && r[3] === 1));
-check2('rates kept apart, float noise rounded', rows.some(r => r[0] === 'map 1' && r[1] === 1.2 && r[3] === 1));
+const fast = rows.find(r => r[0] === 'map 1' && r[1] === 1.2);
+check2('rates kept apart, float noise rounded, map time at the rate', fast && fast[3] === 1 && fast[4] === 47.5 && fast[5] === 50.5, JSON.stringify(fast));
+const unknown = rows.at(-1);
+check2('a map with no stored length has no time, no XP/s, and sorts last', unknown[0] === 'map 3' && unknown[4] === null && unknown[col('Total XP/s')] === null);
+check2('no strain read leaves the strain blank', unknown[col('Avg strain drift (min)')] === null && unknown[col('Plays with strain read')] === 0);
 check2('empty or all means every rate', x.isAllRates('') && x.isAllRates(' All ') && !x.isAllRates('1.2'));
 check2('column letters', x.column(0) === 'A' && x.column(25) === 'Z' && x.column(26) === 'AA');
 
@@ -73,7 +86,7 @@ try {
 	if (process.platform === 'win32') execFileSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', 't.xlsx'], { cwd: dir });
 	else execFileSync('unzip', ['-q', 't.xlsx'], { cwd: dir });
 	const sheet = readFileSync(join(dir, 'xl/worksheets/sheet1.xml'), 'utf8');
-	check2('the workbook unzips, with the sheet inside', sheet.includes('map 2') && sheet.includes('<v>100</v>'));
+	check2('the workbook unzips, with the sheet inside', sheet.includes('map 2') && sheet.includes('<v>0.833</v>'));
 } catch (e) { check2('the workbook unzips', false, e.message); }
 rmSync(dir, { recursive: true, force: true });
 console.log(`export: ${p2} passed, ${f2} failed`);
